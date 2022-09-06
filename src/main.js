@@ -1,1 +1,1 @@
-Deno.core.print("Hello runjs!");
+console.log("Hello runjs!");

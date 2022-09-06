@@ -204,6 +204,7 @@ dependencies = [
  "bevy",
  "crossbeam-channel",
  "deno_core",
+ "futures",
  "rand",
  "tokio",
 ]
