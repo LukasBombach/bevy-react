@@ -39,16 +39,15 @@ impl Plugin for JsRuntimePlugin {
         app.add_startup_system(setup).add_system(read_stream);
 
         fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-            let (tx, rx) = mpsc::unbounded::<JsValue>();
-
             commands.spawn_bundle(Camera2dBundle::default());
             // commands.insert_resource(StreamReceiver(rx));
 
             let my_ext = Extension::builder()
                 .ops(vec![op_stream_event::decl()])
                 .state(move |state| {
+                    let (tx, rx) = mpsc::unbounded::<JsValue>();
                     state.put(tx);
-                    // state.put(rx);
+                    state.put(rx);
                     Ok(())
                 })
                 .build();
