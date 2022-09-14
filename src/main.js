@@ -1,1 +1,1 @@
-console.log("Hello runjs!");
+console.log("Hello world!");

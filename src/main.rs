@@ -1,8 +1,10 @@
 //! How to use an external thread to run an infinite task and communicate with a channel.
+mod deno;
 
 use bevy::prelude::*;
 // Using crossbeam_channel instead of std as std `Receiver` is `!Sync`
 use crossbeam_channel::{bounded, Receiver};
+use deno::run_deno_runtime;
 use rand::Rng;
 use std::time::{Duration, Instant};
 
@@ -28,7 +30,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn_bundle(Camera2dBundle::default());
 
     let (tx, rx) = bounded::<u32>(10);
-    std::thread::spawn(move || loop {
+    std::thread::spawn(move || {
         // Everything here happens in another thread
         // This is where you could connect to an external data source
         let mut rng = rand::thread_rng();
@@ -39,6 +41,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         }
 
         tx.send(rng.gen_range(0..2000)).unwrap();
+
+        run_deno_runtime();
     });
 
     commands.insert_resource(StreamReceiver(rx));
