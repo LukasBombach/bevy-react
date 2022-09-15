@@ -199,6 +199,7 @@ dependencies = [
  "crossbeam-channel",
  "deno_core",
  "futures",
+ "futures-lite",
  "rand",
  "tokio",
 ]

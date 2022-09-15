@@ -1,95 +1,114 @@
-//! How to use an external thread to run an infinite task and communicate with a channel.
-mod deno;
+//! This example shows how to use the ECS and the [`AsyncComputeTaskPool`]
+//! to spawn, poll, and complete tasks across systems and system ticks.
 
-use bevy::prelude::*;
-// Using crossbeam_channel instead of std as std `Receiver` is `!Sync`
-use crossbeam_channel::{bounded, Receiver};
-use deno::run_deno_runtime;
+mod run_js_runtime;
+
+use bevy::{
+    prelude::*,
+    tasks::{AsyncComputeTaskPool, Task},
+};
+// use futures_lite::future;
 use rand::Rng;
+use run_js_runtime::run_js_runtime;
 use std::time::{Duration, Instant};
 
 fn main() {
     App::new()
-        .add_event::<StreamEvent>()
         .add_plugins(DefaultPlugins)
-        .add_startup_system(setup)
-        .add_system(read_stream)
-        .add_system(spawn_text)
-        .add_system(move_text)
+        .add_startup_system(setup_env)
+        .add_startup_system(add_assets)
+        .add_startup_system(spawn_js_runtime)
+        .add_system(handle_tasks)
         .run();
 }
 
-#[derive(Deref)]
-struct StreamReceiver(Receiver<u32>);
-struct StreamEvent(u32);
+// Number of cubes to spawn across the x, y, and z axis
+const NUM_CUBES: u32 = 6;
 
 #[derive(Deref)]
-struct LoadedFont(Handle<Font>);
+struct BoxMeshHandle(Handle<Mesh>);
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn_bundle(Camera2dBundle::default());
+#[derive(Deref)]
+struct BoxMaterialHandle(Handle<StandardMaterial>);
 
-    let (tx, rx) = bounded::<u32>(10);
-    std::thread::spawn(move || {
-        // Everything here happens in another thread
-        // This is where you could connect to an external data source
-        let mut rng = rand::thread_rng();
-        let start_time = Instant::now();
-        let duration = Duration::from_secs_f32(rng.gen_range(0.0..0.2));
-        while start_time.elapsed() < duration {
-            // Spinning for 'duration', simulating doing hard work!
-        }
+/// Startup system which runs only once and generates our Box Mesh
+/// and Box Material assets, adds them to their respective Asset
+/// Resources, and stores their handles as resources so we can access
+/// them later when we're ready to render our Boxes
+fn add_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let box_mesh_handle = meshes.add(Mesh::from(shape::Cube { size: 0.25 }));
+    commands.insert_resource(BoxMeshHandle(box_mesh_handle));
 
-        tx.send(rng.gen_range(0..2000)).unwrap();
-
-        run_deno_runtime();
-    });
-
-    commands.insert_resource(StreamReceiver(rx));
-    commands.insert_resource(LoadedFont(asset_server.load("fonts/FiraSans-Bold.ttf")));
+    let box_material_handle = materials.add(Color::rgb(1.0, 0.2, 0.3).into());
+    commands.insert_resource(BoxMaterialHandle(box_material_handle));
 }
 
-// This system reads from the receiver and sends events to Bevy
-fn read_stream(receiver: ResMut<StreamReceiver>, mut events: EventWriter<StreamEvent>) {
-    for from_stream in receiver.try_iter() {
-        events.send(StreamEvent(from_stream));
+#[derive(Component)]
+struct ComputeTransform(Task<Transform>);
+
+/// This system generates tasks simulating computationally intensive
+/// work that potentially spans multiple frames/ticks. A separate
+/// system, `handle_tasks`, will poll the spawned tasks on subsequent
+/// frames/ticks, and use the results to spawn cubes
+fn spawn_js_runtime(mut commands: Commands) {
+    let thread_pool = AsyncComputeTaskPool::get();
+
+    // Spawn new task on the AsyncComputeTaskPool
+    let task = thread_pool.spawn(async move { run_js_runtime.await? });
+
+    // Spawn new entity and add our new task as a component
+    commands.spawn().insert(ComputeTransform(task));
+}
+
+/// This system queries for entities that have our Task<Transform> component. It polls the
+/// tasks to see if they're complete. If the task is complete it takes the result, adds a
+/// new [`PbrBundle`] of components to the entity using the result from the task's work, and
+/// removes the task component from the entity.
+fn handle_tasks(
+    mut commands: Commands,
+    mut transform_tasks: Query<(Entity, &mut ComputeTransform)>,
+    box_mesh_handle: Res<BoxMeshHandle>,
+    box_material_handle: Res<BoxMaterialHandle>,
+) {
+    for (entity, mut task) in &mut transform_tasks {
+        if let Some(transform) = future::block_on(future::poll_once(&mut task.0)) {
+            // Add our new PbrBundle of components to our tagged entity
+            commands.entity(entity).insert_bundle(PbrBundle {
+                mesh: box_mesh_handle.clone(),
+                material: box_material_handle.clone(),
+                transform,
+                ..default()
+            });
+
+            // Task is complete, so remove task component from entity
+            commands.entity(entity).remove::<ComputeTransform>();
+        }
     }
 }
 
-fn spawn_text(
-    mut commands: Commands,
-    mut reader: EventReader<StreamEvent>,
-    loaded_font: Res<LoadedFont>,
-) {
-    let text_style = TextStyle {
-        font: loaded_font.clone(),
-        font_size: 20.0,
-        color: Color::WHITE,
+/// This system is only used to setup light and camera for the environment
+fn setup_env(mut commands: Commands) {
+    // Used to center camera on spawned cubes
+    let offset = if NUM_CUBES % 2 == 0 {
+        (NUM_CUBES / 2) as f32 - 0.5
+    } else {
+        (NUM_CUBES / 2) as f32
     };
 
-    for (per_frame, event) in reader.iter().enumerate() {
-        commands.spawn_bundle(Text2dBundle {
-            text: Text::from_section(event.0.to_string(), text_style.clone())
-                .with_alignment(TextAlignment::CENTER),
-            transform: Transform::from_xyz(
-                per_frame as f32 * 100.0 + rand::thread_rng().gen_range(-40.0..40.0),
-                300.0,
-                0.0,
-            ),
-            ..default()
-        });
-    }
-}
+    // lights
+    commands.spawn_bundle(PointLightBundle {
+        transform: Transform::from_xyz(4.0, 12.0, 15.0),
+        ..default()
+    });
 
-fn move_text(
-    mut commands: Commands,
-    mut texts: Query<(Entity, &mut Transform), With<Text>>,
-    time: Res<Time>,
-) {
-    for (entity, mut position) in &mut texts {
-        position.translation -= Vec3::new(0.0, 100.0 * time.delta_seconds(), 0.0);
-        if position.translation.y < -300.0 {
-            commands.entity(entity).despawn();
-        }
-    }
+    // camera
+    commands.spawn_bundle(Camera3dBundle {
+        transform: Transform::from_xyz(offset, offset, 15.0)
+            .looking_at(Vec3::new(offset, offset, 0.0), Vec3::Y),
+        ..default()
+    });
 }
